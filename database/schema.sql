@@ -16,7 +16,20 @@ CREATE TABLE IF NOT EXISTS projects (
   description TEXT,
   technology VARCHAR(255),
   progress INT DEFAULT 0,
+  join_code VARCHAR(10) UNIQUE DEFAULT NULL,
+  join_password_hash VARCHAR(255) DEFAULT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS project_members (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  project_id INT NOT NULL,
+  user_id INT NOT NULL,
+  role ENUM('head', 'member') NOT NULL DEFAULT 'member',
+  joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY unique_project_user (project_id, user_id),
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -28,11 +41,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   status ENUM('todo', 'in_progress', 'done') DEFAULT 'todo',
   priority ENUM('low', 'medium', 'high') DEFAULT 'medium',
   due_date DATE NULL,
-  assigned_to VARCHAR(255) NULL,
+  assigned_to INT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (assigned_to) REFERENCES users(id) ON DELETE SET NULL
 );
 
--- If upgrading from old schema with 'inprog':
--- ALTER TABLE tasks MODIFY status ENUM('todo', 'in_progress', 'done') DEFAULT 'todo';
--- UPDATE tasks SET status = 'in_progress' WHERE status = 'inprog';

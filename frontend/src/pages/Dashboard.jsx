@@ -4,6 +4,7 @@ import api from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import Sidebar from "../components/Sidebar";
 import EditProjectModal from "../components/EditProjectModal";
+import JoinProjectModal from "../components/JoinProjectModal";
 import LoadingSpinner from "../components/LoadingSpinner";
 
 function StatCard({ label, value, accent }) {
@@ -27,9 +28,11 @@ export default function Dashboard() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [technology, setTechnology] = useState("");
+  const [joinPassword, setJoinPassword] = useState("");
 
   const [editingProject, setEditingProject] = useState(null);
   const [showEditModal, setShowEditModal] = useState(false);
+  const [showJoinModal, setShowJoinModal] = useState(false);
 
   const fetchAll = async () => {
     try {
@@ -54,11 +57,17 @@ export default function Dashboard() {
     if (!name.trim()) return;
     setSaving(true);
     try {
-      const res = await api.post("/projects", { name, description, technology });
+      const res = await api.post("/projects", {
+        name,
+        description,
+        technology,
+        join_password: joinPassword,
+      });
       setProjects((prev) => [res.data.data, ...prev]);
       setName("");
       setDescription("");
       setTechnology("");
+      setJoinPassword("");
       const statsRes = await api.get("/ai/dashboard");
       setStats(statsRes.data.data);
     } catch (err) {
@@ -97,6 +106,11 @@ export default function Dashboard() {
     }
   };
 
+  const handleJoinedProject = (project) => {
+    setProjects((prev) => [project, ...prev.filter((p) => p.id !== project.id)]);
+    navigate(`/project/${project.id}`);
+  };
+
   const inputCls =
     "w-full bg-[#35365d] text-white p-3 rounded-xl mb-3 outline-none focus:ring-2 focus:ring-purple-500 transition";
 
@@ -109,12 +123,23 @@ export default function Dashboard() {
           <LoadingSpinner size="lg" className="min-h-[60vh]" />
         ) : (
           <>
-            <h1 className="text-white text-4xl font-bold mb-1">
-              Good morning, {user?.name?.split(" ")[0] || "there"} 👋
-            </h1>
-            <p className="text-gray-400 mb-8">
-              Manage your projects smarter with AI.
-            </p>
+            <div className="flex justify-between items-start mb-8 flex-wrap gap-4">
+              <div>
+                <h1 className="text-white text-4xl font-bold mb-1">
+                  Good morning, {user?.name?.split(" ")[0] || "there"} 👋
+                </h1>
+                <p className="text-gray-400">
+                  Manage your projects smarter with AI.
+                </p>
+              </div>
+
+              <button
+                onClick={() => setShowJoinModal(true)}
+                className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-6 py-3 rounded-xl hover:opacity-90 transition font-medium shadow-lg shadow-indigo-500/20 flex items-center gap-2"
+              >
+                <span>🔑</span> Join Project
+              </button>
+            </div>
 
             {stats && (
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-10">
@@ -148,17 +173,26 @@ export default function Dashboard() {
                 onChange={(e) => setDescription(e.target.value)}
                 className={`${inputCls} min-h-[80px] resize-none`}
               />
-              <input
-                type="text"
-                placeholder="Technology (e.g. React, Node, MySQL)"
-                value={technology}
-                onChange={(e) => setTechnology(e.target.value)}
-                className={inputCls}
-              />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+                <input
+                  type="text"
+                  placeholder="Technology (e.g. React, Node, MySQL)"
+                  value={technology}
+                  onChange={(e) => setTechnology(e.target.value)}
+                  className={inputCls.replace("mb-3", "")}
+                />
+                <input
+                  type="password"
+                  placeholder="Join Password (optional for members)"
+                  value={joinPassword}
+                  onChange={(e) => setJoinPassword(e.target.value)}
+                  className={inputCls.replace("mb-3", "")}
+                />
+              </div>
               <button
                 onClick={createProject}
                 disabled={saving || !name.trim()}
-                className="bg-gradient-to-r from-purple-600 to-pink-500 text-white px-8 py-3 rounded-xl hover:opacity-90 transition disabled:opacity-50 shadow-lg shadow-purple-500/20"
+                className="bg-gradient-to-r from-purple-600 to-pink-500 text-white px-8 py-3 rounded-xl hover:opacity-90 transition disabled:opacity-50 shadow-lg shadow-purple-500/20 font-medium"
               >
                 {saving ? "Creating…" : "Create Project"}
               </button>
@@ -168,7 +202,7 @@ export default function Dashboard() {
             {projects.length === 0 ? (
               <div className="text-center py-16 text-gray-500 bg-[#1c1d47]/50 rounded-2xl border border-white/5">
                 <p className="text-4xl mb-3">📁</p>
-                <p>No projects yet — create one above</p>
+                <p>No projects yet — create one above or join an existing project</p>
               </div>
             ) : (
               <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-6">
@@ -183,57 +217,76 @@ export default function Dashboard() {
                       ? "bg-yellow-500/15 text-yellow-400"
                       : "bg-slate-500/15 text-slate-400";
 
+                  const isHead = project.user_role === "head" || Number(project.user_id) === Number(user?.id);
+
                   return (
                     <div
                       key={project.id}
-                      className="bg-[#1c1d47] rounded-2xl p-6 shadow-xl border border-white/5 hover:border-purple-500/30 hover:shadow-purple-500/10 transition group"
+                      className="bg-[#1c1d47] rounded-2xl p-6 shadow-xl border border-white/5 hover:border-purple-500/30 hover:shadow-purple-500/10 transition group flex flex-col justify-between"
                     >
-                      <div className="flex items-start justify-between mb-2">
-                        <h3 className="text-white text-xl font-bold">{project.name}</h3>
-                        <span className={`text-xs px-2.5 py-1 rounded-full ${healthCls}`}>
-                          {health}
-                        </span>
-                      </div>
-                      <p className="text-gray-400 mb-2 text-sm line-clamp-2">
-                        {project.description || "No description"}
-                      </p>
-                      <p className="text-sky-400 mb-4 text-sm">{project.technology}</p>
-
-                      <div className="mb-5">
-                        <div className="flex justify-between text-sm mb-2">
-                          <span className="text-gray-400">Progress</span>
-                          <span className="text-fuchsia-400 font-medium">{progress}%</span>
+                      <div>
+                        <div className="flex items-start justify-between mb-2 flex-wrap gap-2">
+                          <h3 className="text-white text-xl font-bold">{project.name}</h3>
+                          <div className="flex items-center gap-1.5">
+                            <span className={`text-xs px-2.5 py-1 rounded-full ${healthCls}`}>
+                              {health}
+                            </span>
+                            <span
+                              className={`text-xs px-2.5 py-1 rounded-full font-medium ${
+                                isHead
+                                  ? "bg-purple-500/20 text-purple-300 border border-purple-500/30"
+                                  : "bg-blue-500/20 text-blue-300 border border-blue-500/30"
+                              }`}
+                            >
+                              {isHead ? "Head 👑" : "Member 👤"}
+                            </span>
+                          </div>
                         </div>
-                        <div className="w-full bg-[#35365d] rounded-full h-2">
-                          <div
-                            className="bg-gradient-to-r from-purple-500 to-fuchsia-500 h-2 rounded-full transition-all duration-500"
-                            style={{ width: `${progress}%` }}
-                          />
+                        <p className="text-gray-400 mb-2 text-sm line-clamp-2">
+                          {project.description || "No description"}
+                        </p>
+                        <p className="text-sky-400 mb-4 text-sm">{project.technology}</p>
+
+                        <div className="mb-5">
+                          <div className="flex justify-between text-sm mb-2">
+                            <span className="text-gray-400">Progress</span>
+                            <span className="text-fuchsia-400 font-medium">{progress}%</span>
+                          </div>
+                          <div className="w-full bg-[#35365d] rounded-full h-2">
+                            <div
+                              className="bg-gradient-to-r from-purple-500 to-fuchsia-500 h-2 rounded-full transition-all duration-500"
+                              style={{ width: `${progress}%` }}
+                            />
+                          </div>
                         </div>
                       </div>
 
-                      <div className="flex gap-2 flex-wrap">
+                      <div className="flex gap-2 flex-wrap pt-3 border-t border-white/5">
                         <button
                           onClick={() => navigate(`/project/${project.id}`)}
-                          className="bg-cyan-500 text-white px-4 py-2 rounded-lg hover:bg-cyan-600 transition text-sm"
+                          className="bg-cyan-500 text-white px-4 py-2 rounded-lg hover:bg-cyan-600 transition text-sm flex-1 font-medium"
                         >
                           Open Project
                         </button>
-                        <button
-                          onClick={() => {
-                            setEditingProject(project);
-                            setShowEditModal(true);
-                          }}
-                          className="bg-yellow-500/90 text-white px-3 py-2 rounded-lg hover:bg-yellow-600 transition text-sm"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => handleDelete(project.id)}
-                          className="bg-red-500/90 text-white px-3 py-2 rounded-lg hover:bg-red-600 transition text-sm"
-                        >
-                          Delete
-                        </button>
+                        {isHead && (
+                          <>
+                            <button
+                              onClick={() => {
+                                setEditingProject(project);
+                                setShowEditModal(true);
+                              }}
+                              className="bg-yellow-500/90 text-white px-3 py-2 rounded-lg hover:bg-yellow-600 transition text-sm"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => handleDelete(project.id)}
+                              className="bg-red-500/90 text-white px-3 py-2 rounded-lg hover:bg-red-600 transition text-sm"
+                            >
+                              Delete
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
                   );
@@ -254,6 +307,13 @@ export default function Dashboard() {
         onSave={handleEditSave}
         saving={saving}
       />
+
+      <JoinProjectModal
+        open={showJoinModal}
+        onClose={() => setShowJoinModal(false)}
+        onJoined={handleJoinedProject}
+      />
     </div>
   );
 }
+

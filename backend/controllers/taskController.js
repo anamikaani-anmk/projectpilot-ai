@@ -1,21 +1,8 @@
 const db = require("../config/db");
-const { normalizeRow, normalizeRows, normalizeStatus } = require("../utils/normalize");
+const { normalizeRow, normalizeStatus } = require("../utils/normalize");
+const { getMemberRole } = require("./projectController");
 
 const VALID_STATUSES = ["todo", "in_progress", "done"];
-
-function verifyProjectOwnership(projectId, userId, callback) {
-  db.query(
-    "SELECT user_id FROM projects WHERE id = ?",
-    [projectId],
-    (err, rows) => {
-      if (err) return callback(err);
-      if (!rows.length) return callback(null, false, "not_found");
-      const project = normalizeRow(rows[0]);
-      if (project.user_id !== userId) return callback(null, false, "forbidden");
-      callback(null, true);
-    }
-  );
-}
 
 function updateProjectProgress(project_id) {
   const sql = `
@@ -40,33 +27,42 @@ function updateProjectProgress(project_id) {
 function formatTask(row) {
   const task = normalizeRow(row);
   task.status = normalizeStatus(task.status);
+  if (task.assigned_to) {
+    task.assigned_to = Number(task.assigned_to);
+  } else {
+    task.assigned_to = null;
+  }
   return task;
 }
 
 const getTasks = (req, res) => {
   const project_id = req.params.project_id;
 
-  verifyProjectOwnership(project_id, req.user.id, (err, owned, reason) => {
+  getMemberRole(project_id, req.user.id, (err, role, reason) => {
     if (err) {
       return res.status(500).json({ success: false, message: err.message });
     }
     if (reason === "not_found") {
       return res.status(404).json({ success: false, message: "Project not found" });
     }
-    if (!owned) {
+    if (!role) {
       return res.status(403).json({ success: false, message: "Access denied" });
     }
 
-    db.query(
-      "SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at ASC",
-      [project_id],
-      (err2, result) => {
-        if (err2) {
-          return res.status(500).json({ success: false, message: err2.message });
-        }
-        res.json({ success: true, data: result.map(formatTask) });
+    const sql = `
+      SELECT t.*, u.name AS assignee_name, u.email AS assignee_email
+      FROM tasks t
+      LEFT JOIN users u ON t.assigned_to = u.id
+      WHERE t.project_id = ?
+      ORDER BY t.created_at ASC
+    `;
+
+    db.query(sql, [project_id], (err2, result) => {
+      if (err2) {
+        return res.status(500).json({ success: false, message: err2.message });
       }
-    );
+      res.json({ success: true, data: result.map(formatTask) });
+    });
   });
 };
 
@@ -94,15 +90,30 @@ const createTask = (req, res) => {
     });
   }
 
-  verifyProjectOwnership(project_id, req.user.id, (err, owned, reason) => {
+  getMemberRole(project_id, req.user.id, (err, role, reason) => {
     if (err) {
       return res.status(500).json({ success: false, message: err.message });
     }
     if (reason === "not_found") {
       return res.status(404).json({ success: false, message: "Project not found" });
     }
-    if (!owned) {
+    if (!role) {
       return res.status(403).json({ success: false, message: "Access denied" });
+    }
+
+    let finalAssignedTo = null;
+    if (role === "member") {
+      // Member can only create tasks assigned to themselves
+      if (assigned_to && Number(assigned_to) !== Number(req.user.id)) {
+        return res.status(403).json({
+          success: false,
+          message: "Members can only create tasks assigned to themselves",
+        });
+      }
+      finalAssignedTo = req.user.id;
+    } else {
+      // Head can assign to anyone or leave null
+      finalAssignedTo = assigned_to ? Number(assigned_to) : null;
     }
 
     db.query(
@@ -114,24 +125,27 @@ const createTask = (req, res) => {
         description || "",
         priority,
         due_date || null,
-        assigned_to || null,
+        finalAssignedTo,
       ],
       (err2, result) => {
         if (err2) {
           return res.status(500).json({ success: false, message: err2.message });
         }
 
-        db.query(
-          "SELECT * FROM tasks WHERE id = ?",
-          [result.insertId],
-          (err3, rows) => {
-            if (err3) {
-              return res.status(500).json({ success: false, message: err3.message });
-            }
-            updateProjectProgress(project_id);
-            res.status(201).json({ success: true, data: formatTask(rows[0]) });
+        const sql = `
+          SELECT t.*, u.name AS assignee_name, u.email AS assignee_email
+          FROM tasks t
+          LEFT JOIN users u ON t.assigned_to = u.id
+          WHERE t.id = ?
+        `;
+
+        db.query(sql, [result.insertId], (err3, rows) => {
+          if (err3) {
+            return res.status(500).json({ success: false, message: err3.message });
           }
-        );
+          updateProjectProgress(project_id);
+          res.status(201).json({ success: true, data: formatTask(rows[0]) });
+        });
       }
     );
   });
@@ -151,12 +165,36 @@ const updateTask = (req, res) => {
 
     const existing = formatTask(rows[0]);
 
-    verifyProjectOwnership(existing.project_id, req.user.id, (err2, owned, reason) => {
+    getMemberRole(existing.project_id, req.user.id, (err2, role) => {
       if (err2) {
         return res.status(500).json({ success: false, message: err2.message });
       }
-      if (!owned) {
+      if (!role) {
         return res.status(403).json({ success: false, message: "Access denied" });
+      }
+
+      let finalAssignedTo = existing.assigned_to;
+
+      if (role === "member") {
+        // Member can only edit tasks assigned to themselves
+        if (Number(existing.assigned_to) !== Number(req.user.id)) {
+          return res.status(403).json({
+            success: false,
+            message: "Forbidden: Members can only edit tasks assigned to themselves",
+          });
+        }
+        if (assigned_to !== undefined && Number(assigned_to) !== Number(req.user.id)) {
+          return res.status(403).json({
+            success: false,
+            message: "Forbidden: Members cannot reassign tasks to others",
+          });
+        }
+        finalAssignedTo = req.user.id;
+      } else {
+        // Head role
+        if (assigned_to !== undefined) {
+          finalAssignedTo = assigned_to ? Number(assigned_to) : null;
+        }
       }
 
       const nextStatus = status ? normalizeStatus(status) : existing.status;
@@ -173,7 +211,7 @@ const updateTask = (req, res) => {
           description ?? existing.description,
           priority || existing.priority,
           due_date ?? existing.due_date,
-          assigned_to ?? existing.assigned_to,
+          finalAssignedTo,
           nextStatus,
           id,
         ],
@@ -184,7 +222,14 @@ const updateTask = (req, res) => {
 
           updateProjectProgress(existing.project_id);
 
-          db.query("SELECT * FROM tasks WHERE id = ?", [id], (err4, updated) => {
+          const sql = `
+            SELECT t.*, u.name AS assignee_name, u.email AS assignee_email
+            FROM tasks t
+            LEFT JOIN users u ON t.assigned_to = u.id
+            WHERE t.id = ?
+          `;
+
+          db.query(sql, [id], (err4, updated) => {
             if (err4) {
               return res.status(500).json({ success: false, message: err4.message });
             }
@@ -205,7 +250,7 @@ const updateTaskStatus = (req, res) => {
     return res.status(400).json({ success: false, message: "Invalid status" });
   }
 
-  db.query("SELECT project_id FROM tasks WHERE id = ?", [id], (err, rows) => {
+  db.query("SELECT * FROM tasks WHERE id = ?", [id], (err, rows) => {
     if (err) {
       return res.status(500).json({ success: false, message: err.message });
     }
@@ -213,14 +258,21 @@ const updateTaskStatus = (req, res) => {
       return res.status(404).json({ success: false, message: "Task not found" });
     }
 
-    const project_id = normalizeRow(rows[0]).project_id;
+    const existing = formatTask(rows[0]);
 
-    verifyProjectOwnership(project_id, req.user.id, (err2, owned) => {
+    getMemberRole(existing.project_id, req.user.id, (err2, role) => {
       if (err2) {
         return res.status(500).json({ success: false, message: err2.message });
       }
-      if (!owned) {
+      if (!role) {
         return res.status(403).json({ success: false, message: "Access denied" });
+      }
+
+      if (role === "member" && Number(existing.assigned_to) !== Number(req.user.id)) {
+        return res.status(403).json({
+          success: false,
+          message: "Forbidden: Members can only update status of tasks assigned to themselves",
+        });
       }
 
       db.query(
@@ -231,11 +283,13 @@ const updateTaskStatus = (req, res) => {
             return res.status(500).json({ success: false, message: err3.message });
           }
 
+          updateProjectProgress(existing.project_id);
+
           db.query(
             `SELECT COUNT(*) AS total,
                     SUM(CASE WHEN status IN ('done', 'completed') THEN 1 ELSE 0 END) AS done
              FROM tasks WHERE project_id = ?`,
-            [project_id],
+            [existing.project_id],
             (err4, result) => {
               if (err4) {
                 return res.status(500).json({ success: false, message: err4.message });
@@ -243,13 +297,7 @@ const updateTaskStatus = (req, res) => {
               const { total, done } = result[0];
               const progress = total > 0 ? Math.round((done / total) * 100) : 0;
 
-              db.query(
-                "UPDATE projects SET progress = ? WHERE id = ?",
-                [progress, project_id],
-                () => {
-                  res.json({ success: true, progress, status: nextStatus });
-                }
-              );
+              res.json({ success: true, progress, status: nextStatus });
             }
           );
         }
@@ -261,7 +309,7 @@ const updateTaskStatus = (req, res) => {
 const deleteTask = (req, res) => {
   const { id } = req.params;
 
-  db.query("SELECT project_id FROM tasks WHERE id = ?", [id], (err, rows) => {
+  db.query("SELECT * FROM tasks WHERE id = ?", [id], (err, rows) => {
     if (err) {
       return res.status(500).json({ success: false, message: err.message });
     }
@@ -269,21 +317,28 @@ const deleteTask = (req, res) => {
       return res.status(404).json({ success: false, message: "Task not found" });
     }
 
-    const project_id = normalizeRow(rows[0]).project_id;
+    const existing = formatTask(rows[0]);
 
-    verifyProjectOwnership(project_id, req.user.id, (err2, owned) => {
+    getMemberRole(existing.project_id, req.user.id, (err2, role) => {
       if (err2) {
         return res.status(500).json({ success: false, message: err2.message });
       }
-      if (!owned) {
+      if (!role) {
         return res.status(403).json({ success: false, message: "Access denied" });
+      }
+
+      if (role === "member" && Number(existing.assigned_to) !== Number(req.user.id)) {
+        return res.status(403).json({
+          success: false,
+          message: "Forbidden: Members can only delete tasks assigned to themselves",
+        });
       }
 
       db.query("DELETE FROM tasks WHERE id = ?", [id], (err3) => {
         if (err3) {
           return res.status(500).json({ success: false, message: err3.message });
         }
-        updateProjectProgress(project_id);
+        updateProjectProgress(existing.project_id);
         res.json({ success: true, message: "Task deleted" });
       });
     });
@@ -297,3 +352,4 @@ module.exports = {
   updateTaskStatus,
   deleteTask,
 };
+
